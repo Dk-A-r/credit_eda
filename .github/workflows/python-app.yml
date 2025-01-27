@@ -1,0 +1,171 @@
+# This workflow will install Python dependencies, run tests and lint with a single version of Python
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python
+
+name: Overwrite Repository
+
+on:
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: ./mymlpackage
+
+#Enable docker services with dind
+jobs:
+  format-and-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+      - name: Install dependencies
+        run: |
+          pip install flake8-black
+      - name: Formatting
+        run: |
+          black --line-length=79 ./*.py
+      - name: Linting
+        #Ignore non-clear BLK100 error and W503 to be compatible with Black work
+        run: |
+          flake8 --ignore=BLK100,W503 ./*.py
+
+  eda-part:
+    runs-on: ubuntu-latest
+    services:
+      docker:
+        image: docker:dind
+        options: --privileged
+
+    steps:
+      # Step 1: Checkout the repository
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      # Step 2: Make your changes
+      - name: Install dependencies
+        run: |
+          pip install -r ../requirements.txt --upgrade pip setuptools wheel twine
+
+      # Step 3: Build image for generation
+      - name: Build image
+        run: |
+          docker build -t notebook-generator:latest .
+
+      # Step 4: Generate NB in container (and test image)
+      - name: Generate NB
+        run: |
+          docker run -v .:/app notebook-generator
+
+      # Step 5: Configure Git
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # Step 6: Add, Commit, and Push
+      - name: Commit and Push Changes
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          #rm -r __pycache__
+          git add -A
+          git rm --cached -r ./__pycache__
+          git commit -m "CI/CD: Overwrite repository with new changes"
+          git push -u origin HEAD
+
+  image-part:
+    runs-on: ubuntu-latest
+    needs: [eda-part, format-and-lint]
+    services:
+      docker:
+        image: docker:dind
+        options: --privileged
+    steps:
+      # Step 1: Checkout the repository
+      - name: Checkout Code
+        uses: actions/checkout@v3
+      # Step 2: Login in Gitlab Registry
+      - name: Log in to GitLab Container Registry
+        run: |
+          echo "${{ secrets.GITLAB_PERSONAL_ACCESS_TOKEN }}" | docker login registry.gitlab.com -u "${{ secrets.GITLAB_USERNAME }}" --password-stdin
+          echo "Login completed successfully"
+
+      # Step 3: Build image for generation
+      - name: Build image
+        run: |
+          docker build -t notebook-generator:latest .
+
+      # Step 4: Tag image for Gitlab Registry
+      - name: Tag Docker image
+        run: |
+          docker tag notebook-generator:latest registry.gitlab.com/${{ secrets.GITLAB_USERNAME }}/dummy_repo/notebook-generator:latest
+
+      # Step 5: Push Docker image to Gitlab Registry
+      - name: Push Docker image
+        run: |
+          docker push registry.gitlab.com/${{ secrets.GITLAB_USERNAME }}/dummy_repo/notebook-generator:latest
+
+  package-part:
+    runs-on: ubuntu-latest
+    needs: image-part
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      # Step 1: Checkout the repository
+      - name: Checkout Code
+        uses: actions/checkout@v3
+      # Step 2: Make your changes
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt --upgrade pip setuptools wheel twine
+          pip install -U packaging
+      # Step 3: Build project package
+      - name: Build Python Package
+        run: |
+          python setup.py sdist bdist_wheel
+
+      # Step 4: Push package into Gitlab Packages
+      - name: Publish Package on Gitlab
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.GITLAB_PERSONAL_ACCESS_TOKEN }}
+        run: |
+          twine upload --repository-url https://gitlab.com/api/v4/projects/66270948/packages/pypi dist/*
+
+  pages:
+      runs-on: ubuntu-latest
+      needs: package-part
+      steps:
+        # Step 1: Checkout the repository
+        - name: Checkout Code
+          uses: actions/checkout@v3
+          # Step 2: Make your changes
+        - name: Install dependencies
+          run: |
+            pip install -r ../requirements.txt --upgrade pip setuptools wheel twine
+        # Step 2: Pages
+        - name: Pages publication
+          env:
+            GITLAB_USERNAME: ${{ secrets.GITLAB_USERNAME }}
+            GITLAB_PERSONAL_ACCESS_TOKEN: ${{ secrets.GITLAB_PERSONAL_ACCESS_TOKEN }}
+          run: |
+            git config --global user.email "dkarpov.legal@gmail.com"
+            git config --global user.name ${GITLAB_USERNAME}
+            mkdir -p public
+            mv start_note.html ./public
+
+            git clone https://${GITLAB_USERNAME}:${GITLAB_PERSONAL_ACCESS_TOKEN}@gitlab.com/dkarpov.legal/dummy_repo.git gitlab-repo
+            cd gitlab-repo
+
+            git checkout -B main
+            git branch --set-upstream-to=origin/main main
+            git fetch
+            git merge --ff
+            mkdir -p public
+            mv ../public/start_note.html ./public/index.html
+
+            git add -A
+            git commit -m "Publish static site from GitHub Actions"
+            git push origin main
+
+

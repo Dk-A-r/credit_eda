@@ -36,7 +36,8 @@
 ```
 https://gitlab.com/dkarpov.legal/dummy_repo.git
 ```
-- ссылка на установку пакета из Gitlab Registry
+- ссылка на установку пакета из Gitlab Registry:
+```
 pip install mymlpackage --index-url https://gitlab.com/api/v4/projects/66270948/packages/pypi/simple
 
 ```

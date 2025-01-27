@@ -117,7 +117,7 @@ except EOFError:
             "conclusions.txt в рабочей директории.",
         ]
     )
-    with open("conclusions.txt") as f:
+    with open("/mymlpackage/conclusions.txt") as f:
         text_conclusions = f.read()
 
 cell12 = nbformat.v4.new_markdown_cell(
